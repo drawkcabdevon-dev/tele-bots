@@ -30,7 +30,10 @@ bot.onText(/\/start/, (msg) => {
 
 // Register Modules
 const registerJobsModule = require('./modules/jobs');
+const registerSystemModule = require('./modules/system');
+
 registerJobsModule(bot);
+registerSystemModule(bot);
 
 // Error handling
 bot.on('polling_error', (error) => {
