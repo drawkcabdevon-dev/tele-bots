@@ -1,4 +1,5 @@
 const { scrapeJobs } = require('./scraper');
+const { generateCoverLetter, createGmailDraft } = require('./coverLetter');
 
 // We will keep track of jobs globally in memory for now so the user can "Apply" to them
 const jobCache = new Map();
@@ -78,18 +79,27 @@ module.exports = (bot) => {
             const statusMsg = await bot.sendMessage(chatId, `📝 Generating custom cover letter for *${jobData.title}* at *${jobData.company}*...`, { parse_mode: 'Markdown' });
 
             try {
-                // TODO: 1. Generate Cover Letter via Gemini
-                // TODO: 2. Save Cover Letter to file
-                // TODO: 3. Execute Google Workspace CLI to draft email with Cover Letter & CV attached
-                
-                // Simulate delay for now
-                setTimeout(() => {
-                    bot.editMessageText(`✅ Success! I have drafted an email for the *${jobData.title}* position. Please check your Gmail drafts.`, {
+                // Step 1: Generate Cover Letter via Gemini
+                const coverLetter = await generateCoverLetter(jobData);
+
+                // Step 2: Build email subject
+                const subject = `Application for ${jobData.title} – Devon Clarke`;
+
+                // Step 3: Create Gmail draft via gws CLI
+                const draftId = createGmailDraft(subject, coverLetter);
+
+                await bot.editMessageText(
+                    `✅ *Draft created in Gmail!*\n\n` +
+                    `*Position:* ${jobData.title} at ${jobData.company}\n` +
+                    `*Subject:* ${subject}\n\n` +
+                    `📬 Open Gmail Drafts to review and send.\n\n` +
+                    `*Cover Letter Preview:*\n\`\`\`\n${coverLetter.substring(0, 300)}...\n\`\`\``,
+                    {
                         chat_id: chatId,
                         message_id: statusMsg.message_id,
                         parse_mode: 'Markdown'
-                    });
-                }, 3000);
+                    }
+                );
 
             } catch (error) {
                 console.error(error);
