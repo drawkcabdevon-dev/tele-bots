@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=Plus+Jakarta+Sans:wght@700;800&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #202124; display: flex; align-items: center; justify-content: center; min-height: 1080px; font-family: 'Inter', sans-serif; }
+  .slide { width: 1920px; height: 1080px; background: linear-gradient(135deg, #202124 0%, #0d1b2a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px; position: relative; overflow: hidden; }
+  .stat { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 180px; color: #4285F4; opacity: 0; animation: fadeUp 0.8s ease forwards; }
+  .subtitle { font-size: 48px; font-weight: 700; color: #fff; text-align: center; line-height: 1.3; margin-top: 24px; opacity: 0; animation: fadeUp 0.8s ease 0.3s forwards; }
+  .network { position: absolute; width: 100%; height: 100%; top: 0; left: 0; opacity: 0; animation: fadeIn 1.5s ease 0.5s forwards; }
+  .node { position: absolute; width: 12px; height: 12px; border-radius: 50%; }
+  .node:nth-child(1) { top: 20%; left: 30%; background: #4285F4; box-shadow: 0 0 20px #4285F4; }
+  .node:nth-child(2) { top: 40%; left: 60%; background: #34A853; box-shadow: 0 0 20px #34A853; }
+  .node:nth-child(3) { top: 60%; left: 25%; background: #FBBC05; box-shadow: 0 0 20px #FBBC05; }
+  .node:nth-child(4) { top: 75%; left: 55%; background: #4285F4; box-shadow: 0 0 20px #4285F4; }
+  .node:nth-child(5) { top: 30%; left: 70%; background: #34A853; box-shadow: 0 0 20px #34A853; }
+  .tagline { font-size: 20px; color: #5F6368; margin-top: 60px; letter-spacing: 3px; text-transform: uppercase; opacity: 0; animation: fadeUp 0.8s ease 0.7s forwards; }
+  .accent { position: absolute; bottom: 0; left: 0; right: 0; height: 6px; background: linear-gradient(90deg, #4285F4, #34A853, #FBBC05, #EA4335); }
+  .logo { position: absolute; top: 40px; left: 40px; font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 700; font-size: 20px; color: #5F6368; letter-spacing: 3px; opacity: 0; animation: fadeUp 0.8s ease 0.1s forwards; }
+  .ollie-ring { position: absolute; width: 160px; height: 160px; border-radius: 50%; border: 2px solid #4285F440; animation: spin 8s linear infinite; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  .ollie-ring-inner { position: absolute; width: 100px; height: 100px; border-radius: 50%; border: 2px solid #34A85340; animation: spin 6s linear infinite reverse; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes spin { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="slide">
+  <div class="logo">ONLINE EVERYWHERE</div>
+  <div class="ollie-ring"></div>
+  <div class="ollie-ring-inner"></div>
+  <div class="network">
+    <div class="node" style="animation: pulse 2s ease-in-out infinite 0s;"></div>
+    <div class="node" style="animation: pulse 2s ease-in-out infinite 0.4s;"></div>
+    <div class="node" style="animation: pulse 2s ease-in-out infinite 0.8s;"></div>
+    <div class="node" style="animation: pulse 2s ease-in-out infinite 1.2s;"></div>
+    <div class="node" style="animation: pulse 2s ease-in-out infinite 1.6s;"></div>
+  </div>
+  <div class="stat">24/7</div>
+  <div class="subtitle">Your marketing. Always on. Always learning.</div>
+  <div class="tagline">Powered by Ollie — Data-Driven Marketing, Accelerated by AI.</div>
+  <div class="accent"></div>
+</div>
+</body>
+</html>

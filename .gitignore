@@ -1,5 +1,11 @@
-node_modules/
+__pycache__/
+*.pyc
 .env
 data/
-*.log
+assets/
+*.db
+author_id.json
+authorized_chats.json
 .DS_Store
+*.log
+node_modules/
