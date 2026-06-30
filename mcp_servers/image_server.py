@@ -96,6 +96,16 @@ def _save_image(image_data: bytes, filename: str) -> Path:
 def _save_to_db(tool: str, campaign_id: str, prompt: str, image_path: str, post_content: str):
     import sqlite3
     conn = sqlite3.connect(str(DB_DIR / "data.db"))
+    conn.execute("""CREATE TABLE IF NOT EXISTS design_assets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id TEXT,
+        tool TEXT,
+        post_content TEXT,
+        script_content TEXT,
+        output_path TEXT,
+        status TEXT DEFAULT 'generated',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
     conn.execute(
         "INSERT INTO design_assets (campaign_id, tool, post_content, script_content, output_path, status) VALUES (?, ?, ?, ?, ?, ?)",
         (campaign_id, tool, post_content, json.dumps({"prompt": prompt}), image_path, "generated"),
