@@ -31,6 +31,7 @@ import sys
 import json
 import logging
 import random
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,8 +67,8 @@ def is_authorized(chat_id: int) -> bool:
 DEFAULT_SCHEDULE = {
     "enabled": False,
     "time": "12:00",
-    "days": "M,W,F",
-    "mode": "draft",       # "auto" = post directly, "draft" = save for review
+    "days": "daily",
+    "mode": "auto",       # "auto" = post directly, "draft" = save for review
     "topics": [
         "Barbados digital marketing",
         "Barbados SME website optimization",
@@ -141,6 +142,40 @@ def research_trends_data() -> dict:
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
+def mirror_competitor(competitor_topic: str, competitor_angle: str = "") -> dict:
+    """Analyze a competitor's approach or topic and create a counter-post in OLE voice."""
+    import httpx
+    prompt = competitor_topic
+    if competitor_angle:
+        prompt += f"\n\nCompetitor's angle: {competitor_angle}\n\nCreate a post that counters or improves on this. Use data and OLE's unique value."
+    else:
+        prompt += "\n\nCreate an Online Everywhere post that offers a better approach or counters common bad advice in this space."
+    return draft_content(prompt)
+
+def generate_daily_ideas(count: int = 3) -> list[dict]:
+    """Generate a batch of post ideas for proactive suggestions."""
+    try:
+        from content_server import generate_batch_ideas
+        result = json.loads(generate_batch_ideas(count=count))
+        content = result.get("ideas", "")
+        # Parse into structured ideas
+        ideas = []
+        current = {"title": "", "body": ""}
+        for line in content.split("\n"):
+            line = line.strip()
+            if line.startswith("IDEA") or line.startswith("**IDEA"):
+                if current["title"]:
+                    ideas.append(current)
+                current = {"title": line, "body": ""}
+            elif line:
+                current["body"] += line + "\n"
+        if current["title"]:
+            ideas.append(current)
+        return ideas[:count]
+    except Exception as e:
+        logger.warning(f"generate_daily_ideas failed: {e}")
+        return []
+
 def generate_image_for_post(topic: str) -> str | None:
     """Generate a social graphic and return the path, or None."""
     try:
@@ -186,7 +221,7 @@ def run_content_pipeline(app_instance=None):
         _notify(app_instance, f"Pipeline failed at draft stage for topic '{topic}'.")
         return
 
-    post_text = draft_result.get("post", "")
+    post_text = draft_result.get("content") or draft_result.get("post", "")
     if not post_text:
         logger.error("Pipeline: empty draft")
         return
@@ -276,16 +311,46 @@ def main():
         """Wrapper to call run_content_pipeline with the app instance."""
         run_content_pipeline(app)
 
+    def send_proactive_ideas():
+        """Generate and send 3 post ideas to the authorized chat."""
+        global NOTIFY_CHAT_ID
+        if NOTIFY_CHAT_ID is None:
+            logger.info("Proactive ideas: no authorized chat yet")
+            return
+        ideas = generate_daily_ideas(3)
+        if not ideas:
+            logger.info("Proactive ideas: none generated")
+            return
+        msg = "**Good morning! Here are 3 post ideas for today:**\n\n"
+        for i, idea in enumerate(ideas, 1):
+            title = idea.get("title", f"Idea {i}")
+            body = idea.get("body", "")
+            msg += f"*{i}. {title}*\n{body[:300].strip()}\n\n"
+        msg += "Use /draft to flesh out any of these, or /post to publish."
+        _notify(app, msg)
+        logger.info("Proactive ideas sent")
+
     def reschedule_job():
-        """Remove old job and add new one based on current config."""
+        """Remove old jobs and add new ones based on current config."""
         scheduler.remove_all_jobs()
         cfg = load_schedule()
         if not cfg.get("enabled"):
             logger.info("Scheduler: disabled, no jobs added")
             return
         try:
+            # Daily proactive ideas at 9:00 UTC
+            scheduler.add_job(
+                send_proactive_ideas,
+                "cron",
+                hour=9,
+                minute=0,
+                id="proactive_ideas",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+            # Main content pipeline
             hour, minute = cfg["time"].split(":")
-            day_cron = days_to_cron(cfg.get("days", "M,W,F"))
+            day_cron = days_to_cron(cfg.get("days", "daily"))
             scheduler.add_job(
                 schedule_pipeline,
                 "cron",
@@ -296,7 +361,7 @@ def main():
                 replace_existing=True,
                 misfire_grace_time=300,
             )
-            logger.info(f"Scheduler: job set for {cfg['time']} on {cfg['days']}")
+            logger.info(f"Scheduler: ideas at 9:00, post at {cfg['time']} on {cfg['days']}")
         except Exception as e:
             logger.error(f"Scheduler setup failed: {e}")
 
@@ -305,37 +370,37 @@ def main():
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "Online Everywhere LinkedIn Agent\n\n"
-            "I manage LinkedIn content for Online Everywhere.\n"
-            "Authenticate with /authorize first, then set up scheduling.\n\n"
-            "Commands:\n"
-            "/draft <topic>   - Draft a post\n"
-            "/trends          - Trending searches right now\n"
-            "/research <topic>- Deep research\n"
-            "/schedule        - Set up auto-posting\n"
-            "/post_now        - Run pipeline now\n"
-            "/post <text>     - Post to LinkedIn\n"
-            "/status          - Health check\n"
-            "/help            - Full command list"
+            "I'm your LinkedIn coordinator. I handle daily posting, "
+            "hot topic reactions, and competitor mirroring.\n\n"
+            "Start: /authorize to link this chat\n"
+            "Then try:\n"
+            "/hot       - Trending topics, instant post\n"
+            "/mirror    - Counter a competitor's move\n"
+            "/draft     - Generate a post on any topic\n"
+            "/schedule  - Set up daily auto-posting\n"
+            "/help      - Full command list"
         )
         await update.message.reply_text(text)
 
     async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
-            "/authorize          - Authorize this chat\n"
-            "/draft <topic>      - Draft a LinkedIn post\n"
-            "/trends             - Today's trending searches\n"
+            "/authorize          - Link this chat (required once)\n"
+            "/hot                - Check trends, draft an instant post\n"
+            "/mirror <topic>     - Counter a competitor's move or topic\n"
+            "/draft <topic>      - Create a post draft\n"
+            "/trends             - Trending searches right now\n"
             "/research <topic>   - Deep research + content ideas\n"
             "/post <text>        - Post to LinkedIn\n"
             "/post_image <text>  - Reply to image to post\n"
-            "/schedule           - Show schedule help\n"
-            "/schedule on        - Enable auto-posting\n"
-            "/schedule off       - Disable auto-posting\n"
-            "/schedule status    - Show current schedule\n"
-            "/schedule time HH:MM - Set posting time (UTC)\n"
-            "/schedule days M,W,F - Set days\n"
-            "/schedule mode auto|draft - Post directly or save draft\n"
-            "/schedule topics t1,t2,t3 - Topics to rotate\n"
-            "/post_now           - Run pipeline immediately\n"
+            "/schedule           - Schedule management\n"
+            "/schedule on        - Enable daily auto-posting\n"
+            "/schedule off       - Disable\n"
+            "/schedule status    - Current config\n"
+            "/schedule time HH:MM - Set time (UTC)\n"
+            "/schedule days ...  - daily, M,W,F, etc\n"
+            "/schedule mode auto|draft - Auto-post or review\n"
+            "/schedule topics ... - Comma-separated topics\n"
+            "/post_now           - Run pipeline now\n"
             "/status             - Health check\n"
             "/help               - This message"
         )
@@ -365,7 +430,7 @@ def main():
         try:
             result = draft_content(topic)
             if result.get("status") == "drafted":
-                await update.message.reply_text(f"Draft:\n\n{result.get('post', '')[:3000]}")
+                await update.message.reply_text(f"Draft:\n\n{(result.get('content') or result.get('post', ''))[:3000]}")
             else:
                 await update.message.reply_text(f"Error: {result.get('detail', str(result))}")
         except Exception as e:
@@ -577,6 +642,68 @@ def main():
         else:
             await update.message.reply_text(f"Unknown subcommand: {sub}. See /help")
 
+    async def hot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check trending topics and offer to post about one."""
+        if not await require_auth(update, context): return
+        await update.message.reply_text("Checking trending topics...")
+        try:
+            from research_server import daily_brief, trending_searches
+            brief = json.loads(daily_brief())
+            us = brief.get("us_trends", [])
+            bb = brief.get("barbados_trends", [])
+            all_trends = us[:3] + bb[:3]
+            # Dedupe
+            seen = set()
+            unique = []
+            for t in all_trends:
+                key = t.lower().strip()
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(t)
+
+            msg = "**Today's Hot Topics**\n\n"
+            msg += "US Trends:\n" + "\n".join(f"- {t}" for t in us[:5]) + "\n\n"
+            msg += f"Barbados: {', '.join(bb[:5])}\n\n"
+
+            # Draft a post about the #1 trend
+            top_topic = unique[0] if unique else "digital marketing trends"
+            draft = draft_content(f"hot topic: {top_topic}")
+            if draft.get("status") == "drafted":
+                post = draft.get("content", "")
+                msg += f"**Instant Post Draft** (about '{top_topic}'):\n\n{post[:1000]}"
+                msg += "\n\n---\nSend /post_now to publish this or /draft <topic> for something else."
+            else:
+                msg += f"No draft generated: {draft.get('detail', '?')}"
+
+            await update.message.reply_text(msg[:4000])
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
+    async def mirror_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Mirror a competitor's post or topic with an OLE counter-angle."""
+        if not await require_auth(update, context): return
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "Usage: /mirror <competitor topic or post description>\n\n"
+                "Example: /mirror \"Vend close more deals with AI\"\n\n"
+                "I'll analyze their angle and create a counter-post in OLE voice."
+            )
+            return
+        topic = " ".join(args)
+        await update.message.reply_text(f"Analyzing competitor angle: {topic}...")
+        try:
+            result = mirror_competitor(topic)
+            if result.get("status") == "drafted":
+                post = result.get("content", "")
+                msg = f"**Competitor Mirror** (counter-post):\n\n{post[:2000]}"
+                msg += "\n\n---\nReply with /post to publish this."
+                await update.message.reply_text(msg[:4000])
+            else:
+                await update.message.reply_text(f"Error: {result.get('detail', str(result))}")
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+
     async def post_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await require_auth(update, context): return
         await update.message.reply_text("Running content pipeline now...")
@@ -597,6 +724,8 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("post_image", post_image_cmd))
     app.add_handler(CommandHandler("schedule", schedule_cmd))
+    app.add_handler(CommandHandler("hot", hot_cmd))
+    app.add_handler(CommandHandler("mirror", mirror_cmd))
     app.add_handler(CommandHandler("post_now", post_now))
     app.add_handler(CommandHandler("status", status_cmd))
 
