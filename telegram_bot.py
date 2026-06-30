@@ -121,6 +121,8 @@ def detect_intent(text: str) -> str:
         return "trends"
     if any(w in t for w in ("brainstorm", "ideas", "give me ideas", "think of", "come up with", "what should we post")):
         return "brainstorm"
+    if any(w in t for w in ("what's planned", "whats planned", "upcoming", "what's coming", "calendar", "what's next", "planned posts")):
+        return "planned"
     return "unknown"
 
 INTENT_RESPONSES = {
@@ -131,6 +133,7 @@ INTENT_RESPONSES = {
     "whoami": "I'm your LinkedIn coordinator for Online Everywhere. I draft posts, check trends, mirror competitors, and keep your daily content flowing. Think of me as your in-house social media strategist who never sleeps.",
     "trends": "Use /hot to check what's trending right now and get an instant post draft. Or /trends to just see the list.",
     "brainstorm": "Use /brainstorm <topic> and I'll throw out 8 rapid-fire post ideas. Or just tell me what you want to brainstorm about and I'll run with it.",
+    "planned": "Use /planned to see your upcoming content schedule — what's posting when, topic rotation, and next few days at a glance.",
 }
 
 FALLBACK_REPLY = "Got it. Use /draft to create a post, /hot for trending topics, or /mirror to counter something a competitor posted. Or just keep chatting — I'll help however I can."
@@ -490,6 +493,7 @@ def main():
         text = (
             "/authorize          - Link this chat (required once)\n"
             "/brainstorm <topic> - Rapid-fire 8 post ideas\n"
+            "/planned            - View your content calendar\n"
             "/hot                - Check trends, draft an instant post\n"
             "/mirror <topic>     - Counter a competitor's move or topic\n"
             "/draft <topic>      - Create a post draft\n"
@@ -673,24 +677,61 @@ def main():
             "Want me to keep brainstorming on a different angle? Just say the topic "
             "or use /brainstorm again. Or pick one and I'll draft it."
         )
+
+    def next_scheduled_posts(days_to_show: int = 7) -> list[dict]:
+        """Calculate upcoming posts based on schedule config."""
+        cfg = load_schedule()
+        if not cfg.get("enabled") or not cfg.get("topics"):
+            return []
+        topics = cfg["topics"]
+        day_map = {"M": 0, "T": 1, "W": 2, "TH": 3, "F": 4, "SA": 5, "SU": 6}
+        day_str = cfg.get("days", "daily").strip().lower()
+        if day_str == "daily":
+            active_days = set(range(7))
+        elif day_str == "weekdays":
+            active_days = set(range(1, 6))
+        elif day_str == "weekends":
+            active_days = {0, 6}
+        else:
+            active_days = set()
+            for d in day_str.split(","):
+                d = d.strip().upper()
+                if d in day_map:
+                    active_days.add(day_map[d])
+        start = datetime.now(timezone.utc)
+        idx = cfg.get("topic_index", 0)
+        from datetime import timedelta
+        upcoming = []
+        for offset in range(21):
+            d = start + timedelta(days=offset)
+            if d.weekday() in active_days and d.date() >= start.date():
+                topic = topics[idx % len(topics)]
+                t = cfg["time"]
+                upcoming.append({"date": d.strftime("%a %b %d"), "topic": topic, "time": t})
+                idx += 1
+                if len(upcoming) >= days_to_show:
+                    break
+        return upcoming
+
+    async def planned_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show the upcoming schedule of planned posts."""
         if not await require_auth(update, context): return
-        await update.message.reply_text("Checking system health...")
-        try:
-            from linkedin_server import whoami
-            profile = json.loads(whoami())
-            linkedin = "ok" if "name" in profile else "error"
-            cfg = load_schedule()
-            sched_status = "enabled" if cfg.get("enabled") else "disabled"
-            text = (
-                f"LinkedIn: {linkedin}\n"
-                f"Schedule: {sched_status}\n"
-                f"Time: {cfg.get('time')} on {cfg.get('days')}\n"
-                f"Mode: {cfg.get('mode')}\n"
-                f"Topics: {len(cfg.get('topics', []))} loaded\n"
-            )
-            await update.message.reply_text(text)
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
+        cfg = load_schedule()
+        if not cfg.get("enabled"):
+            await update.message.reply_text("Schedule is disabled. Enable it with /schedule on")
+            return
+        upcoming = next_scheduled_posts(7)
+        if not upcoming:
+            await update.message.reply_text("No upcoming posts scheduled.")
+            return
+        msg = f"**Planned Content — Next {len(upcoming)} Posts**\n\n"
+        msg += f"Time: {cfg['time']} UTC | Mode: {cfg['mode']}\n"
+        msg += f"Topics in rotation: {len(cfg.get('topics', []))}\n\n"
+        for entry in upcoming:
+            msg += f"• {entry['date']} @ {entry['time']} — {entry['topic']}\n"
+        msg += "\n*Proactive ideas every 9:00 UTC*\n"
+        msg += "Use /schedule to adjust. Use /post_now to skip the queue."
+        await update.message.reply_text(msg)
 
     async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await require_auth(update, context): return
@@ -931,6 +972,8 @@ Never say "as an AI" or "I don't have access to". Offer /draft, /hot, /mirror, /
     app.add_handler(CommandHandler("post_image", post_image_cmd))
     app.add_handler(CommandHandler("schedule", schedule_cmd))
     app.add_handler(CommandHandler("brainstorm", brainstorm_cmd))
+    app.add_handler(CommandHandler("planned", planned_cmd))
+    app.add_handler(CommandHandler("calendar", planned_cmd))
     app.add_handler(CommandHandler("hot", hot_cmd))
     app.add_handler(CommandHandler("mirror", mirror_cmd))
     app.add_handler(CommandHandler("post_now", post_now))
