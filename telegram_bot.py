@@ -123,6 +123,8 @@ def detect_intent(text: str) -> str:
         return "brainstorm"
     if any(w in t for w in ("what's planned", "whats planned", "upcoming", "what's coming", "calendar", "what's next", "planned posts")):
         return "planned"
+    if any(w in t for w in ("history", "what was posted", "previous posts", "past posts", "what did we post", "recent posts")):
+        return "history"
     return "unknown"
 
 INTENT_RESPONSES = {
@@ -134,6 +136,7 @@ INTENT_RESPONSES = {
     "trends": "Use /hot to check what's trending right now and get an instant post draft. Or /trends to just see the list.",
     "brainstorm": "Use /brainstorm <topic> and I'll throw out 8 rapid-fire post ideas. Or just tell me what you want to brainstorm about and I'll run with it.",
     "planned": "Use /planned to see your upcoming content schedule — what's posting when, topic rotation, and next few days at a glance.",
+    "history": "Use /history to see what's already been posted. I keep a log so we don't repeat ourselves.",
 }
 
 FALLBACK_REPLY = "Got it. Use /draft to create a post, /hot for trending topics, or /mirror to counter something a competitor posted. Or just keep chatting — I'll help however I can."
@@ -220,7 +223,7 @@ from linkedin_server import create_post, post_image, post_multi_image
 from content_server import draft_post, generate_carousel_script
 from image_server import generate_social_graphic, generate_carousel_images
 from research_server import trending_searches, daily_brief
-from local_server import save_draft, log_published
+from local_server import save_draft, log_published, list_published
 
 def post_to_linkedin(text: str, image_path: str | None = None) -> dict:
     if image_path:
@@ -494,6 +497,7 @@ def main():
             "/authorize          - Link this chat (required once)\n"
             "/brainstorm <topic> - Rapid-fire 8 post ideas\n"
             "/planned            - View your content calendar\n"
+            "/history            - See what's already been posted\n"
             "/hot                - Check trends, draft an instant post\n"
             "/mirror <topic>     - Counter a competitor's move or topic\n"
             "/draft <topic>      - Create a post draft\n"
@@ -733,6 +737,26 @@ def main():
         msg += "Use /schedule to adjust. Use /post_now to skip the queue."
         await update.message.reply_text(msg)
 
+    async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show recent posting history."""
+        if not await require_auth(update, context): return
+        try:
+            result = json.loads(list_published(platform="linkedin", limit=10))
+            posts = result if isinstance(result, list) else []
+            if not posts:
+                await update.message.reply_text("No posts published yet. Use /post or enable /schedule to get started.")
+                return
+            msg = f"**Recent Posts — Last {len(posts)}**\n\n"
+            for p in posts:
+                date = p.get("created_at", "")[:10] if p.get("created_at") else ""
+                content = p.get("content", "")[:120].replace("\n", " ")
+                post_id = p.get("external_id", "")[:20]
+                msg += f"• {date} — {content}...\n"
+            msg += "\nUse /planned to see upcoming content."
+            await update.message.reply_text(msg[:4000])
+        except Exception as e:
+            await update.message.reply_text(f"Error loading history: {e}")
+
     async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await require_auth(update, context): return
         cfg = load_schedule()
@@ -942,13 +966,33 @@ def main():
         # 2. Try Gemini with rate limiting
         try:
             from content_server import OLE_SYSTEM_PROMPT
-            system_prompt = OLE_SYSTEM_PROMPT + """
+            # Include recent posting history as context
+            recent_history = ""
+            try:
+                hist = json.loads(list_published(platform="linkedin", limit=5))
+                if isinstance(hist, list) and hist:
+                    recent_history = "\n\nRecent posts we've already published:\n"
+                    for h in hist:
+                        date = (h.get("created_at") or "")[:10]
+                        content = (h.get("content") or "")[:150].replace("\n", " ")
+                        recent_history += f"- {date}: {content}\n"
+            except Exception:
+                pass
 
-You are the LinkedIn coordinator for Online Everywhere, a data-driven marketing agency in Barbados.
-You chat with the business owner. Be conversational, direct, and helpful.
+            # Include upcoming schedule
+            schedule_context = ""
+            try:
+                upc = next_scheduled_posts(3)
+                if upc:
+                    schedule_context = "\n\nUpcoming scheduled posts:\n"
+                    for e in upc:
+                        schedule_context += f"- {e['date']}: {e['topic']}\n"
+            except Exception:
+                pass
 
-Keep responses tight (2-4 paragraphs). End with an actionable suggestion or question.
-Never say "as an AI" or "I don't have access to". Offer /draft, /hot, /mirror, /post as options."""
+            system_prompt = OLE_SYSTEM_PROMPT + recent_history + schedule_context + """
+
+You are the LinkedIn coordinator for Online Everywhere. You chat with the business owner. Be conversational, direct, and helpful."""
 
             reply = gemini_chat(user_text, system_prompt)
             if reply:
@@ -974,6 +1018,7 @@ Never say "as an AI" or "I don't have access to". Offer /draft, /hot, /mirror, /
     app.add_handler(CommandHandler("brainstorm", brainstorm_cmd))
     app.add_handler(CommandHandler("planned", planned_cmd))
     app.add_handler(CommandHandler("calendar", planned_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("hot", hot_cmd))
     app.add_handler(CommandHandler("mirror", mirror_cmd))
     app.add_handler(CommandHandler("post_now", post_now))
