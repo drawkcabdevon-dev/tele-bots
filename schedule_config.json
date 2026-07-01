@@ -2,7 +2,7 @@
   "enabled": true,
   "time": "14:00",
   "days": "daily",
-  "mode": "auto",
+  "mode": "draft",
   "topics": [
     "Barbados digital marketing",
     "Barbados SME website optimization",

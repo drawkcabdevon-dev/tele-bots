@@ -125,6 +125,10 @@ def detect_intent(text: str) -> str:
         return "planned"
     if any(w in t for w in ("history", "what was posted", "previous posts", "past posts", "what did we post", "recent posts")):
         return "history"
+    if any(w in t for w in ("approve", "post it", "publish it", "yes post", "go ahead", "looks good")):
+        return "approve"
+    if any(w in t for w in ("reject", "skip", "no", "don't post", "not that", "discard")):
+        return "reject"
     return "unknown"
 
 INTENT_RESPONSES = {
@@ -137,6 +141,8 @@ INTENT_RESPONSES = {
     "brainstorm": "Use /brainstorm <topic> and I'll throw out 8 rapid-fire post ideas. Or just tell me what you want to brainstorm about and I'll run with it.",
     "planned": "Use /planned to see your upcoming content schedule — what's posting when, topic rotation, and next few days at a glance.",
     "history": "Use /history to see what's already been posted. I keep a log so we don't repeat ourselves.",
+    "approve": "Use /approve to publish the last previewed post. If there's nothing pending, try /preview first.",
+    "reject": "Use /reject to skip the pending draft. I'll move to the next topic.",
 }
 
 FALLBACK_REPLY = "Got it. Use /draft to create a post, /hot for trending topics, or /mirror to counter something a competitor posted. Or just keep chatting — I'll help however I can."
@@ -146,8 +152,26 @@ RATE_LIMITED_REPLY = "I'm catching up on requests — hit the free tier rate lim
 BASE = Path.home() / "social-agent"
 AUTHORIZED_CHATS_FILE = BASE / "authorized_chats.json"
 SCHEDULE_CONFIG_FILE = BASE / "schedule_config.json"
+PENDING_DRAFT_FILE = BASE / "pending_draft.json"
 NOTIFY_CHAT_ID = None  # Set when /authorize runs
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")  # For direct HTTP notify
+
+# ── Pending draft queue (preview → approve flow) ────────────────────
+
+def save_pending_draft(topic: str, content: str, image_path: str | None = None):
+    """Save a generated post for preview/approval."""
+    data = {"topic": topic, "content": content, "image_path": image_path, "created_at": datetime.now(timezone.utc).isoformat()}
+    PENDING_DRAFT_FILE.write_text(json.dumps(data, indent=2))
+    logger.info(f"Pending draft saved: {topic}")
+
+def load_pending_draft() -> dict | None:
+    if PENDING_DRAFT_FILE.exists():
+        return json.loads(PENDING_DRAFT_FILE.read_text())
+    return None
+
+def clear_pending_draft():
+    if PENDING_DRAFT_FILE.exists():
+        PENDING_DRAFT_FILE.unlink()
 
 # ── Authorized chat management ──────────────────────────────────────
 
@@ -168,7 +192,7 @@ DEFAULT_SCHEDULE = {
     "enabled": False,
     "time": "12:00",
     "days": "daily",
-    "mode": "auto",       # "auto" = post directly, "draft" = save for review
+    "mode": "draft",       # "draft" = preview + approve, "auto" = post directly
     "topics": [
         "Barbados digital marketing",
         "Barbados SME website optimization",
@@ -358,16 +382,17 @@ def run_content_pipeline(app_instance=None):
         except Exception as e:
             _notify(app_instance, f"Auto-post error: {e}")
     else:
-        # Draft mode — save as draft for review
+        # Draft mode — save for review with full preview
+        save_pending_draft(topic, post_text, img_path)
         try:
-            draft_saved = json.loads(save_draft("linkedin", post_text))
-            _notify(app_instance,
-                f"Draft saved for review (ID: {draft_saved.get('id', '?')})\n"
-                f"Topic: {topic}\n"
-                f"Reply to review: make/edit post\n\n{post_text[:500]}")
-            logger.info(f"Pipeline: draft saved for topic '{topic}'")
+            preview = f"**Draft Ready for Review — {topic}**\n\n{post_text[:1500]}"
+            if img_path:
+                preview += f"\n\nImage generated at: {img_path}"
+            preview += "\n\n---\nSend /approve to publish now, or /reject to skip."
+            _notify(app_instance, preview)
+            logger.info(f"Pipeline: draft saved for topic '{topic}', awaiting approval")
         except Exception as e:
-            logger.error(f"Pipeline: save draft failed: {e}")
+            logger.error(f"Pipeline: notify draft failed: {e}")
 
 def _notify(app_instance, text: str):
     """Send a notification via Telegram HTTP API (no async needed)."""
@@ -496,7 +521,10 @@ def main():
         text = (
             "/authorize          - Link this chat (required once)\n"
             "/brainstorm <topic> - Rapid-fire 8 post ideas\n"
-            "/planned            - View your content calendar\n"
+            "/planned            - Calendar + preview next post\n"
+            "/preview            - Preview the next post\n"
+            "/approve            - Publish the previewed post\n"
+            "/reject             - Skip the previewed post\n"
             "/history            - See what's already been posted\n"
             "/hot                - Check trends, draft an instant post\n"
             "/mirror <topic>     - Counter a competitor's move or topic\n"
@@ -718,7 +746,7 @@ def main():
         return upcoming
 
     async def planned_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show the upcoming schedule of planned posts."""
+        """Show upcoming schedule with full preview of the next post."""
         if not await require_auth(update, context): return
         cfg = load_schedule()
         if not cfg.get("enabled"):
@@ -728,14 +756,44 @@ def main():
         if not upcoming:
             await update.message.reply_text("No upcoming posts scheduled.")
             return
-        msg = f"**Planned Content — Next {len(upcoming)} Posts**\n\n"
-        msg += f"Time: {cfg['time']} UTC | Mode: {cfg['mode']}\n"
-        msg += f"Topics in rotation: {len(cfg.get('topics', []))}\n\n"
+
+        msg = f"**Upcoming Content Calendar**\n\n"
+        msg += f"Schedule: {cfg['time']} UTC daily | Mode: {cfg['mode']}\n\n"
         for entry in upcoming:
-            msg += f"• {entry['date']} @ {entry['time']} — {entry['topic']}\n"
-        msg += "\n*Proactive ideas every 9:00 UTC*\n"
-        msg += "Use /schedule to adjust. Use /post_now to skip the queue."
+            marker = "→ " if entry == upcoming[0] else "  "
+            msg += f"{marker}{entry['date']} — {entry['topic']}\n"
+
+        # Generate full preview of the next post
         await update.message.reply_text(msg)
+        await update.message.reply_text("Generating preview of the next post...")
+
+        try:
+            topic = upcoming[0]["topic"]
+            brief = json.loads(daily_brief())
+            trend_text = brief.get("content_brief", "") if brief.get("status") == "ok" else ""
+            prompt = topic
+            if trend_text:
+                prompt = f"{topic}. Use this trending context if relevant: {trend_text[:500]}"
+
+            draft_result = draft_content(prompt)
+            if draft_result.get("status") != "drafted":
+                await update.message.reply_text(f"Preview failed: {draft_result.get('detail', '?')}")
+                return
+            post_text = draft_result.get("content") or draft_result.get("post", "")
+            if not post_text:
+                await update.message.reply_text("Preview generated empty content.")
+                return
+
+            img_path = generate_image_for_post(topic)
+            save_pending_draft(topic, post_text, img_path)
+
+            preview = f"**Preview — {topic}**\n\n{post_text[:2000]}"
+            if img_path:
+                preview += f"\n\n_(Image generated)_"
+            preview += "\n\nSend /approve to publish now, /reject to skip, or /draft to edit."
+            await update.message.reply_text(preview[:4000])
+        except Exception as e:
+            await update.message.reply_text(f"Preview error: {e}")
 
     async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show recent posting history."""
@@ -756,6 +814,101 @@ def main():
             await update.message.reply_text(msg[:4000])
         except Exception as e:
             await update.message.reply_text(f"Error loading history: {e}")
+
+    async def preview_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Preview the next scheduled post without publishing."""
+        if not await require_auth(update, context): return
+        # Check if there's already a pending draft
+        pending = load_pending_draft()
+        if pending:
+            msg = f"**Pending Draft (awaiting approval)**\n\nTopic: {pending['topic']}\n\n{pending['content'][:1500]}"
+            if pending.get("image_path"):
+                msg += f"\n\nImage: {pending['image_path']}"
+            msg += "\n\nSend /approve to publish or /reject to discard."
+            await update.message.reply_text(msg[:4000])
+            return
+
+        # Generate preview from next scheduled topic
+        cfg = load_schedule()
+        if not cfg.get("enabled"):
+            await update.message.reply_text("Schedule is disabled. Nothing to preview.")
+            return
+        topics = cfg.get("topics", [])
+        idx = cfg.get("topic_index", 0) % len(topics)
+        topic = topics[idx]
+        await update.message.reply_text(f"Generating preview for: **{topic}**...")
+
+        # Run pipeline in preview mode (generate but don't post)
+        try:
+            brief = json.loads(daily_brief())
+            trend_text = brief.get("content_brief", "") if brief.get("status") == "ok" else ""
+        except Exception:
+            trend_text = ""
+        prompt = topic
+        if trend_text:
+            prompt = f"{topic}. Use this trending context if relevant: {trend_text[:500]}"
+        draft_result = draft_content(prompt)
+        if draft_result.get("status") != "drafted":
+            await update.message.reply_text(f"Preview failed: {draft_result.get('detail', '?')}")
+            return
+        post_text = draft_result.get("content") or draft_result.get("post", "")
+        if not post_text:
+            await update.message.reply_text("Preview generated empty content.")
+            return
+
+        img_path = generate_image_for_post(topic)
+
+        # Save as pending draft
+        save_pending_draft(topic, post_text, img_path)
+
+        msg = f"**Preview — Next Scheduled Post**\n\nTopic: {topic}\n\n---\n\n{post_text[:2000]}"
+        if img_path:
+            msg += f"\n\nImage generated ✓"
+        msg += "\n\nSend /approve to publish or /reject to discard. Use /draft to edit the text."
+        await update.message.reply_text(msg[:4000])
+
+    async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Publish the pending draft."""
+        if not await require_auth(update, context): return
+        pending = load_pending_draft()
+        if not pending:
+            await update.message.reply_text("No pending draft to approve. Use /preview to generate one first.")
+            return
+        await update.message.reply_text("Publishing approved post...")
+        try:
+            post_text = pending["content"]
+            img_path = pending.get("image_path")
+            if img_path and Path(img_path).exists():
+                result = json.loads(post_multi_image(post_text, [img_path]))
+            else:
+                result = json.loads(create_post(post_text))
+            if result.get("status") == "posted":
+                pid = result.get("id", "")
+                log_published("linkedin", pid, post_text)
+                # Advance topic index so we don't regenerate the same topic
+                cfg = load_schedule()
+                cfg["topic_index"] = cfg.get("topic_index", 0) + 1
+                save_schedule(cfg)
+                clear_pending_draft()
+                await update.message.reply_text(f"Posted: https://linkedin.com/feed/update/{pid}")
+            else:
+                await update.message.reply_text(f"Post failed: {result.get('detail', '?')}")
+        except Exception as e:
+            await update.message.reply_text(f"Error posting: {e}")
+
+    async def reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Reject the pending draft."""
+        if not await require_auth(update, context): return
+        pending = load_pending_draft()
+        if not pending:
+            await update.message.reply_text("No pending draft to reject.")
+            return
+        clear_pending_draft()
+        # Advance topic index so we move to next topic
+        cfg = load_schedule()
+        cfg["topic_index"] = cfg.get("topic_index", 0) + 1
+        save_schedule(cfg)
+        await update.message.reply_text("Draft rejected and skipped. Use /preview to generate the next one.")
 
     async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await require_auth(update, context): return
@@ -1018,6 +1171,9 @@ You are the LinkedIn coordinator for Online Everywhere. You chat with the busine
     app.add_handler(CommandHandler("brainstorm", brainstorm_cmd))
     app.add_handler(CommandHandler("planned", planned_cmd))
     app.add_handler(CommandHandler("calendar", planned_cmd))
+    app.add_handler(CommandHandler("preview", preview_cmd))
+    app.add_handler(CommandHandler("approve", approve_cmd))
+    app.add_handler(CommandHandler("reject", reject_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("hot", hot_cmd))
     app.add_handler(CommandHandler("mirror", mirror_cmd))
